@@ -2,6 +2,23 @@
 
 Aplicação web para extração de texto de PDFs e imagens usando o modelo DeepSeek-OCR via Ollama.
 
+## Screenshots
+
+### Exemplos de Uso
+![Exemplos de prompts e resultados](frontend/public/examples.jpg)
+
+### Conversão de Documentos para Markdown
+![Parsing de documentos](frontend/public/document-parsing.jpg)
+
+### Parsing de Figuras Matemáticas
+![Parsing de figuras matemáticas](frontend/public/math-parsing.jpg)
+
+### Análise de Relatórios Financeiros
+![Análise de relatórios](frontend/public/financial-report.jpg)
+
+### Benchmark de Performance
+![Benchmark](frontend/public/benchmark.png)
+
 ## Pré-requisitos
 
 1. **Ollama v0.13.0+** instalado e rodando
