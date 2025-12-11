@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react'
 import { useDropzone } from 'react-dropzone'
+import { jsPDF } from 'jspdf'
 import {
   Upload,
   FileText,
@@ -15,6 +16,13 @@ import {
   Sun,
   Moon,
   Monitor,
+  X,
+  FileJson,
+  FileType,
+  Columns,
+  Rows,
+  ChevronLeft,
+  ChevronRight,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import { useTheme, Theme } from './hooks/useTheme'
@@ -22,12 +30,14 @@ import { useTheme, Theme } from './hooks/useTheme'
 interface PageResult {
   page: number
   text: string
+  image?: string
 }
 
 interface FileResult {
   filename: string
   type: 'pdf' | 'image'
   text?: string
+  image?: string
   pages?: PageResult[]
   total_pages?: number
   success: boolean
@@ -66,6 +76,10 @@ function App() {
   const [showSettings, setShowSettings] = useState(true)
   const [dpi, setDpi] = useState(200)
   const [expandedFile, setExpandedFile] = useState<string | null>(null)
+  const [previewModal, setPreviewModal] = useState<FileResult | null>(null)
+  const [showDownloadModal, setShowDownloadModal] = useState(false)
+  const [previewLayout, setPreviewLayout] = useState<'side' | 'stack'>('side')
+  const [currentPage, setCurrentPage] = useState(1)
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newFiles: ProcessingFile[] = acceptedFiles.map((file) => ({
@@ -128,6 +142,7 @@ function App() {
                     filename: result.filename,
                     type: isPdf ? 'pdf' : 'image',
                     text: result.text,
+                    image: result.image,
                     pages: result.pages,
                     total_pages: result.total_pages,
                     success: true,
@@ -167,8 +182,8 @@ function App() {
     navigator.clipboard.writeText(text)
   }
 
-  const downloadResults = () => {
-    const results = files
+  const getResultsData = () => {
+    return files
       .filter((f) => f.status === 'done' && f.result)
       .map((f) => {
         if (f.result?.type === 'pdf' && f.result.pages) {
@@ -185,7 +200,10 @@ function App() {
           text: f.result?.text,
         }
       })
+  }
 
+  const downloadAsJson = () => {
+    const results = getResultsData()
     const blob = new Blob([JSON.stringify(results, null, 2)], {
       type: 'application/json',
     })
@@ -195,6 +213,79 @@ function App() {
     a.download = 'ocr-results.json'
     a.click()
     URL.revokeObjectURL(url)
+    setShowDownloadModal(false)
+  }
+
+  const downloadAsPdf = () => {
+    const results = getResultsData()
+    const doc = new jsPDF()
+    const pageWidth = doc.internal.pageSize.getWidth()
+    const margin = 15
+    const maxWidth = pageWidth - margin * 2
+    let y = 20
+
+    doc.setFontSize(18)
+    doc.text('OCR Results', margin, y)
+    y += 15
+
+    results.forEach((result, idx) => {
+      if (y > 270) {
+        doc.addPage()
+        y = 20
+      }
+
+      doc.setFontSize(12)
+      doc.setFont('helvetica', 'bold')
+      doc.text(`File: ${result.filename}`, margin, y)
+      y += 8
+
+      doc.setFont('helvetica', 'normal')
+      doc.setFontSize(10)
+
+      if ('pages' in result && result.pages) {
+        result.pages.forEach((page: { page: number; text: string }) => {
+          if (y > 270) {
+            doc.addPage()
+            y = 20
+          }
+          doc.setFont('helvetica', 'bold')
+          doc.text(`Page ${page.page}:`, margin, y)
+          y += 6
+          doc.setFont('helvetica', 'normal')
+          
+          const lines = doc.splitTextToSize(page.text || '', maxWidth)
+          lines.forEach((line: string) => {
+            if (y > 280) {
+              doc.addPage()
+              y = 20
+            }
+            doc.text(line, margin, y)
+            y += 5
+          })
+          y += 5
+        })
+      } else {
+        const lines = doc.splitTextToSize(result.text || '', maxWidth)
+        lines.forEach((line: string) => {
+          if (y > 280) {
+            doc.addPage()
+            y = 20
+          }
+          doc.text(line, margin, y)
+          y += 5
+        })
+      }
+      y += 10
+
+      if (idx < results.length - 1) {
+        doc.setDrawColor(200)
+        doc.line(margin, y - 5, pageWidth - margin, y - 5)
+        y += 5
+      }
+    })
+
+    doc.save('ocr-results.pdf')
+    setShowDownloadModal(false)
   }
 
   const getFullText = (result: FileResult): string => {
@@ -379,7 +470,7 @@ function App() {
                   <label className={cn(
                     "block text-sm mb-1",
                     resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-600"
-                  )}>DPI (para PDFs)</label>
+                  )}>Escala / DPI</label>
                   <input
                     type="number"
                     value={dpi}
@@ -393,7 +484,7 @@ function App() {
                         : "bg-slate-50 border-slate-300 text-slate-900"
                     )}
                   />
-                  <span className="text-xs text-slate-500 ml-2">Maior = melhor qualidade, mais lento</span>
+                  <span className="text-xs text-slate-500 ml-2">PDFs e imagens • Maior = melhor qualidade, mais lento</span>
                 </div>
               </div>
             </div>
@@ -462,7 +553,7 @@ function App() {
 
             {doneCount > 0 && (
               <button
-                onClick={downloadResults}
+                onClick={() => setShowDownloadModal(true)}
                 className={cn(
                   "flex items-center gap-2 px-4 py-2 rounded-lg font-medium transition-colors",
                   resolvedTheme === 'dark'
@@ -570,11 +661,8 @@ function App() {
                     {item.status === 'done' && item.result && (
                       <>
                         <button
-                          onClick={() =>
-                            setExpandedFile(
-                              expandedFile === item.file.name ? null : item.file.name
-                            )
-                          }
+                          onClick={() => setPreviewModal(item.result!)}
+                          title="Visualizar resultado"
                           className={cn(
                             "p-2 rounded-lg transition-colors",
                             resolvedTheme === 'dark'
@@ -585,7 +673,24 @@ function App() {
                           <Eye className="w-4 h-4" />
                         </button>
                         <button
+                          onClick={() =>
+                            setExpandedFile(
+                              expandedFile === item.file.name ? null : item.file.name
+                            )
+                          }
+                          title="Expandir/Recolher"
+                          className={cn(
+                            "p-2 rounded-lg transition-colors",
+                            resolvedTheme === 'dark'
+                              ? "text-slate-400 hover:text-white hover:bg-slate-700/50"
+                              : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                          )}
+                        >
+                          <FileText className="w-4 h-4" />
+                        </button>
+                        <button
                           onClick={() => copyToClipboard(getFullText(item.result!))}
+                          title="Copiar texto"
                           className={cn(
                             "p-2 rounded-lg transition-colors",
                             resolvedTheme === 'dark'
@@ -698,6 +803,360 @@ function App() {
           </div>
         )}
       </main>
+
+      {/* Preview Modal */}
+      {previewModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className={cn(
+            "relative w-full max-w-7xl max-h-[95vh] rounded-xl shadow-2xl overflow-hidden flex flex-col",
+            resolvedTheme === 'dark' ? "bg-slate-800" : "bg-white"
+          )}>
+            {/* Modal Header */}
+            <div className={cn(
+              "flex items-center justify-between px-6 py-4 border-b shrink-0",
+              resolvedTheme === 'dark' ? "border-slate-700" : "border-slate-200"
+            )}>
+              <div className="flex items-center gap-4">
+                <div>
+                  <h2 className={cn(
+                    "text-lg font-semibold",
+                    resolvedTheme === 'dark' ? "text-white" : "text-slate-900"
+                  )}>
+                    {previewModal.filename}
+                  </h2>
+                  <p className={cn(
+                    "text-sm",
+                    resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-500"
+                  )}>
+                    {previewModal.type === 'pdf' ? `${previewModal.total_pages} páginas` : 'Imagem'}
+                  </p>
+                </div>
+                
+                {/* Page Navigation for PDFs */}
+                {previewModal.type === 'pdf' && previewModal.pages && previewModal.pages.length > 1 && (
+                  <div className="flex items-center gap-2 ml-4">
+                    <button
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1}
+                      className={cn(
+                        "p-1.5 rounded-lg transition-colors",
+                        currentPage === 1
+                          ? "opacity-50 cursor-not-allowed"
+                          : resolvedTheme === 'dark'
+                            ? "hover:bg-slate-700 text-slate-400 hover:text-white"
+                            : "hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+                      )}
+                    >
+                      <ChevronLeft className="w-5 h-5" />
+                    </button>
+                    <span className={cn(
+                      "text-sm font-medium min-w-[80px] text-center",
+                      resolvedTheme === 'dark' ? "text-slate-300" : "text-slate-600"
+                    )}>
+                      {currentPage} / {previewModal.total_pages}
+                    </span>
+                    <button
+                      onClick={() => setCurrentPage(p => Math.min(previewModal.total_pages || 1, p + 1))}
+                      disabled={currentPage === previewModal.total_pages}
+                      className={cn(
+                        "p-1.5 rounded-lg transition-colors",
+                        currentPage === previewModal.total_pages
+                          ? "opacity-50 cursor-not-allowed"
+                          : resolvedTheme === 'dark'
+                            ? "hover:bg-slate-700 text-slate-400 hover:text-white"
+                            : "hover:bg-slate-100 text-slate-500 hover:text-slate-700"
+                      )}
+                    >
+                      <ChevronRight className="w-5 h-5" />
+                    </button>
+                  </div>
+                )}
+              </div>
+              
+              <div className="flex items-center gap-2">
+                {/* Layout Toggle */}
+                <div className={cn(
+                  "flex items-center rounded-lg p-1",
+                  resolvedTheme === 'dark' ? "bg-slate-700" : "bg-slate-100"
+                )}>
+                  <button
+                    onClick={() => setPreviewLayout('side')}
+                    title="Lado a lado"
+                    className={cn(
+                      'p-1.5 rounded-md transition-colors',
+                      previewLayout === 'side'
+                        ? resolvedTheme === 'dark'
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : 'bg-blue-100 text-blue-600'
+                        : resolvedTheme === 'dark'
+                          ? 'text-slate-400 hover:text-white'
+                          : 'text-slate-400 hover:text-slate-700'
+                    )}
+                  >
+                    <Columns className="w-4 h-4" />
+                  </button>
+                  <button
+                    onClick={() => setPreviewLayout('stack')}
+                    title="Empilhado"
+                    className={cn(
+                      'p-1.5 rounded-md transition-colors',
+                      previewLayout === 'stack'
+                        ? resolvedTheme === 'dark'
+                          ? 'bg-blue-500/20 text-blue-400'
+                          : 'bg-blue-100 text-blue-600'
+                        : resolvedTheme === 'dark'
+                          ? 'text-slate-400 hover:text-white'
+                          : 'text-slate-400 hover:text-slate-700'
+                    )}
+                  >
+                    <Rows className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <button
+                  onClick={() => copyToClipboard(getFullText(previewModal))}
+                  className={cn(
+                    "p-2 rounded-lg transition-colors",
+                    resolvedTheme === 'dark'
+                      ? "text-slate-400 hover:text-white hover:bg-slate-700"
+                      : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                  )}
+                  title="Copiar tudo"
+                >
+                  <Copy className="w-5 h-5" />
+                </button>
+                <button
+                  onClick={() => {
+                    setPreviewModal(null)
+                    setCurrentPage(1)
+                  }}
+                  className={cn(
+                    "p-2 rounded-lg transition-colors",
+                    resolvedTheme === 'dark'
+                      ? "text-slate-400 hover:text-white hover:bg-slate-700"
+                      : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                  )}
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+            
+            {/* Modal Content */}
+            <div className="flex-1 overflow-auto">
+              {previewModal.type === 'image' ? (
+                /* Single Image View */
+                <div className={cn(
+                  "h-full",
+                  previewLayout === 'side' ? "flex" : "flex flex-col"
+                )}>
+                  {/* Image */}
+                  <div className={cn(
+                    "flex items-center justify-center p-4",
+                    previewLayout === 'side' ? "w-1/2 border-r" : "border-b",
+                    resolvedTheme === 'dark' ? "bg-slate-900/50 border-slate-700" : "bg-slate-50 border-slate-200"
+                  )}>
+                    {previewModal.image ? (
+                      <img 
+                        src={previewModal.image} 
+                        alt={previewModal.filename}
+                        className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-lg"
+                      />
+                    ) : (
+                      <div className="text-slate-500">Imagem não disponível</div>
+                    )}
+                  </div>
+                  
+                  {/* Text */}
+                  <div className={cn(
+                    "p-6 overflow-auto",
+                    previewLayout === 'side' ? "w-1/2" : "flex-1"
+                  )}>
+                    <div className="flex items-center justify-between mb-3">
+                      <h3 className={cn(
+                        "text-sm font-semibold",
+                        resolvedTheme === 'dark' ? "text-slate-300" : "text-slate-700"
+                      )}>Texto Extraído</h3>
+                      <button
+                        onClick={() => copyToClipboard(previewModal.text || '')}
+                        className={cn(
+                          "p-1.5 rounded transition-colors",
+                          resolvedTheme === 'dark'
+                            ? "text-slate-400 hover:text-white hover:bg-slate-700"
+                            : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                        )}
+                        title="Copiar texto"
+                      >
+                        <Copy className="w-4 h-4" />
+                      </button>
+                    </div>
+                    <pre className={cn(
+                      "text-sm whitespace-pre-wrap font-mono leading-relaxed select-text",
+                      resolvedTheme === 'dark' ? "text-slate-300" : "text-slate-700"
+                    )}>
+                      {previewModal.text}
+                    </pre>
+                  </div>
+                </div>
+              ) : (
+                /* PDF View - Show current page */
+                <div className={cn(
+                  "h-full",
+                  previewLayout === 'side' ? "flex" : "flex flex-col"
+                )}>
+                  {previewModal.pages && previewModal.pages[currentPage - 1] && (
+                    <>
+                      {/* Page Image */}
+                      <div className={cn(
+                        "flex items-center justify-center p-4",
+                        previewLayout === 'side' ? "w-1/2 border-r" : "border-b",
+                        resolvedTheme === 'dark' ? "bg-slate-900/50 border-slate-700" : "bg-slate-50 border-slate-200"
+                      )}>
+                        {previewModal.pages[currentPage - 1].image ? (
+                          <img 
+                            src={previewModal.pages[currentPage - 1].image} 
+                            alt={`Página ${currentPage}`}
+                            className="max-w-full max-h-[70vh] object-contain rounded-lg shadow-lg"
+                          />
+                        ) : (
+                          <div className="text-slate-500">Imagem não disponível</div>
+                        )}
+                      </div>
+                      
+                      {/* Page Text */}
+                      <div className={cn(
+                        "p-6 overflow-auto",
+                        previewLayout === 'side' ? "w-1/2" : "flex-1"
+                      )}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h3 className={cn(
+                            "text-sm font-semibold",
+                            resolvedTheme === 'dark' ? "text-slate-300" : "text-slate-700"
+                          )}>Página {currentPage} - Texto Extraído</h3>
+                          <button
+                            onClick={() => copyToClipboard(previewModal.pages![currentPage - 1].text || '')}
+                            className={cn(
+                              "p-1.5 rounded transition-colors",
+                              resolvedTheme === 'dark'
+                                ? "text-slate-400 hover:text-white hover:bg-slate-700"
+                                : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                            )}
+                            title="Copiar texto desta página"
+                          >
+                            <Copy className="w-4 h-4" />
+                          </button>
+                        </div>
+                        <pre className={cn(
+                          "text-sm whitespace-pre-wrap font-mono leading-relaxed select-text",
+                          resolvedTheme === 'dark' ? "text-slate-300" : "text-slate-700"
+                        )}>
+                          {previewModal.pages[currentPage - 1].text}
+                        </pre>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Download Modal */}
+      {showDownloadModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm">
+          <div className={cn(
+            "relative w-full max-w-md rounded-xl shadow-2xl overflow-hidden",
+            resolvedTheme === 'dark' ? "bg-slate-800" : "bg-white"
+          )}>
+            {/* Modal Header */}
+            <div className={cn(
+              "flex items-center justify-between px-6 py-4 border-b",
+              resolvedTheme === 'dark' ? "border-slate-700" : "border-slate-200"
+            )}>
+              <h2 className={cn(
+                "text-lg font-semibold",
+                resolvedTheme === 'dark' ? "text-white" : "text-slate-900"
+              )}>
+                Exportar Resultados
+              </h2>
+              <button
+                onClick={() => setShowDownloadModal(false)}
+                className={cn(
+                  "p-2 rounded-lg transition-colors",
+                  resolvedTheme === 'dark'
+                    ? "text-slate-400 hover:text-white hover:bg-slate-700"
+                    : "text-slate-400 hover:text-slate-700 hover:bg-slate-100"
+                )}
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Modal Content */}
+            <div className="p-6 space-y-4">
+              <p className={cn(
+                "text-sm",
+                resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-600"
+              )}>
+                Escolha o formato de exportação:
+              </p>
+              
+              <div className="grid grid-cols-2 gap-4">
+                <button
+                  onClick={downloadAsJson}
+                  className={cn(
+                    "flex flex-col items-center gap-3 p-6 rounded-xl border-2 transition-all hover:scale-105",
+                    resolvedTheme === 'dark'
+                      ? "border-slate-600 hover:border-blue-500 hover:bg-blue-500/10"
+                      : "border-slate-200 hover:border-blue-500 hover:bg-blue-50"
+                  )}
+                >
+                  <FileJson className={cn(
+                    "w-10 h-10",
+                    resolvedTheme === 'dark' ? "text-yellow-400" : "text-yellow-600"
+                  )} />
+                  <div className="text-center">
+                    <p className={cn(
+                      "font-semibold",
+                      resolvedTheme === 'dark' ? "text-white" : "text-slate-900"
+                    )}>JSON</p>
+                    <p className={cn(
+                      "text-xs",
+                      resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-500"
+                    )}>Dados estruturados</p>
+                  </div>
+                </button>
+                
+                <button
+                  onClick={downloadAsPdf}
+                  className={cn(
+                    "flex flex-col items-center gap-3 p-6 rounded-xl border-2 transition-all hover:scale-105",
+                    resolvedTheme === 'dark'
+                      ? "border-slate-600 hover:border-red-500 hover:bg-red-500/10"
+                      : "border-slate-200 hover:border-red-500 hover:bg-red-50"
+                  )}
+                >
+                  <FileType className={cn(
+                    "w-10 h-10",
+                    resolvedTheme === 'dark' ? "text-red-400" : "text-red-600"
+                  )} />
+                  <div className="text-center">
+                    <p className={cn(
+                      "font-semibold",
+                      resolvedTheme === 'dark' ? "text-white" : "text-slate-900"
+                    )}>PDF</p>
+                    <p className={cn(
+                      "text-xs",
+                      resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-500"
+                    )}>Documento formatado</p>
+                  </div>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Footer */}
       <footer className={cn(

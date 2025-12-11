@@ -26,10 +26,30 @@ app.add_middleware(
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 
 
-def image_to_base64(image: Image.Image, format: str = "PNG") -> str:
+def image_to_base64(image: Image.Image, format: str = "PNG", quality: int = 85) -> str:
     """Convert PIL Image to base64 string."""
     buffer = io.BytesIO()
-    image.save(buffer, format=format)
+    if format.upper() == "JPEG":
+        image.save(buffer, format=format, quality=quality, optimize=True)
+    else:
+        image.save(buffer, format=format, optimize=True)
+    return base64.b64encode(buffer.getvalue()).decode("utf-8")
+
+
+def image_to_base64_for_preview(image: Image.Image, max_width: int = 1200) -> str:
+    """Convert PIL Image to base64 JPEG for preview (smaller size)."""
+    # Resize if too large
+    if image.width > max_width:
+        ratio = max_width / image.width
+        new_height = int(image.height * ratio)
+        image = image.resize((max_width, new_height), Image.Resampling.LANCZOS)
+    
+    # Convert to RGB if necessary
+    if image.mode in ("RGBA", "P"):
+        image = image.convert("RGB")
+    
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=75, optimize=True)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -80,6 +100,7 @@ async def health_check():
 async def ocr_image(
     file: UploadFile = File(...),
     prompt: str = Form(default="Extract the text in the image."),
+    dpi: int = Form(default=200),
 ):
     """Perform OCR on a single image file."""
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -92,10 +113,33 @@ async def ocr_image(
     if image.mode in ("RGBA", "P"):
         image = image.convert("RGB")
     
-    image_base64 = image_to_base64(image, "PNG")
+    # Scale image based on DPI (reference: 200 DPI as baseline)
+    # Higher DPI = larger image for better OCR on small text
+    if dpi != 200:
+        scale_factor = dpi / 200
+        new_width = int(image.width * scale_factor)
+        new_height = int(image.height * scale_factor)
+        # Limit max size to avoid memory issues
+        max_dimension = 4096
+        if new_width > max_dimension or new_height > max_dimension:
+            ratio = min(max_dimension / new_width, max_dimension / new_height)
+            new_width = int(new_width * ratio)
+            new_height = int(new_height * ratio)
+        image_for_ocr = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    else:
+        image_for_ocr = image
+    
+    image_base64 = image_to_base64(image_for_ocr, "PNG")
     text = await run_ocr_on_image(image_base64, prompt)
     
-    return {"filename": file.filename, "text": text}
+    # Generate preview image (from original, not scaled)
+    preview_base64 = image_to_base64_for_preview(image)
+    
+    return {
+        "filename": file.filename,
+        "text": text,
+        "image": f"data:image/jpeg;base64,{preview_base64}",
+    }
 
 
 @app.post("/ocr/pdf")
@@ -124,9 +168,14 @@ async def ocr_pdf(
         
         image_base64 = image_to_base64(image, "PNG")
         text = await run_ocr_on_image(image_base64, prompt)
+        
+        # Generate preview image for this page
+        preview_base64 = image_to_base64_for_preview(image)
+        
         results.append({
             "page": i + 1,
             "text": text,
+            "image": f"data:image/jpeg;base64,{preview_base64}",
         })
 
     return {
