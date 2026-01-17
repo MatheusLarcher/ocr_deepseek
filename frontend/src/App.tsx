@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { useDropzone } from 'react-dropzone'
 import { jsPDF } from 'jspdf'
 import {
@@ -23,6 +23,7 @@ import {
   Rows,
   ChevronLeft,
   ChevronRight,
+  Camera,
 } from 'lucide-react'
 import { cn } from './lib/utils'
 import { useTheme, Theme } from './hooks/useTheme'
@@ -59,7 +60,7 @@ const PROMPT_OPTIONS = [
   { label: 'Parsear figura', value: 'Parse the figure.' },
 ]
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = 'http://localhost:5401'
 
 const THEME_OPTIONS: { value: Theme; label: string; icon: typeof Sun }[] = [
   { value: 'light', label: 'Claro', icon: Sun },
@@ -75,11 +76,25 @@ function App() {
   const [customPrompt, setCustomPrompt] = useState('')
   const [showSettings, setShowSettings] = useState(true)
   const [dpi, setDpi] = useState(200)
+  const [useDpi, setUseDpi] = useState(true)
   const [expandedFile, setExpandedFile] = useState<string | null>(null)
   const [previewModal, setPreviewModal] = useState<FileResult | null>(null)
   const [showDownloadModal, setShowDownloadModal] = useState(false)
   const [previewLayout, setPreviewLayout] = useState<'side' | 'stack'>('side')
   const [currentPage, setCurrentPage] = useState(1)
+  const [isMobile, setIsMobile] = useState(false)
+  const cameraInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    const checkMobile = () => {
+      const mobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent)
+      const tablet = /(tablet|ipad|playbook|silk)|(android(?!.*mobi))/i.test(navigator.userAgent)
+      setIsMobile(mobile || tablet)
+    }
+    checkMobile()
+    window.addEventListener('resize', checkMobile)
+    return () => window.removeEventListener('resize', checkMobile)
+  }, [])
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
     const newFiles: ProcessingFile[] = acceptedFiles.map((file) => ({
@@ -115,19 +130,32 @@ function App() {
         const formData = new FormData()
         formData.append('file', files[i].file)
         formData.append('prompt', prompt)
-        formData.append('dpi', dpi.toString())
+        formData.append('dpi', useDpi ? dpi.toString() : '200')
 
         const isPdf = files[i].file.type === 'application/pdf'
         const endpoint = isPdf ? '/ocr/pdf' : '/ocr/image'
 
+        // Create abort controller for timeout
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 300000) // 5 minutes timeout
+
         const response = await fetch(`${API_BASE}${endpoint}`, {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         })
 
+        clearTimeout(timeoutId)
+
         if (!response.ok) {
-          const errorData = await response.json()
-          throw new Error(errorData.detail || 'Erro ao processar arquivo')
+          let errorMessage = 'Erro ao processar arquivo'
+          try {
+            const errorData = await response.json()
+            errorMessage = errorData.detail || errorMessage
+          } catch {
+            errorMessage = `Erro HTTP ${response.status}: ${response.statusText}`
+          }
+          throw new Error(errorMessage)
         }
 
         const result = await response.json()
@@ -152,13 +180,25 @@ function App() {
           )
         )
       } catch (error) {
+        let errorMessage = 'Erro desconhecido'
+        
+        if (error instanceof Error) {
+          if (error.name === 'AbortError') {
+            errorMessage = 'Timeout: O processamento demorou mais de 5 minutos. Tente com uma imagem menor ou DPI mais baixo.'
+          } else if (error.message.includes('Failed to fetch') || error.message.includes('NetworkError')) {
+            errorMessage = 'Erro de conexão: Verifique se o backend está rodando na porta 5401 e se o Ollama está ativo.'
+          } else {
+            errorMessage = error.message
+          }
+        }
+        
         setFiles((prev) =>
           prev.map((f, idx) =>
             idx === i
               ? {
                   ...f,
                   status: 'error',
-                  error: error instanceof Error ? error.message : 'Erro desconhecido',
+                  error: errorMessage,
                 }
               : f
           )
@@ -180,6 +220,21 @@ function App() {
 
   const copyToClipboard = (text: string) => {
     navigator.clipboard.writeText(text)
+  }
+
+  const handleCameraCapture = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) {
+      const newFile: ProcessingFile = {
+        file,
+        status: 'pending',
+      }
+      setFiles((prev) => [...prev, newFile])
+    }
+  }
+
+  const openCamera = () => {
+    cameraInputRef.current?.click()
   }
 
   const getResultsData = () => {
@@ -465,26 +520,55 @@ function App() {
               "pt-4 border-t",
               resolvedTheme === 'dark' ? "border-slate-700/50" : "border-slate-200"
             )}>
-              <div className="flex items-center gap-4">
+              <div className="flex items-start gap-4">
+                <div className="flex items-center gap-2 pt-2">
+                  <input
+                    type="checkbox"
+                    id="useDpi"
+                    checked={useDpi}
+                    onChange={(e) => setUseDpi(e.target.checked)}
+                    className={cn(
+                      "w-4 h-4 rounded cursor-pointer",
+                      resolvedTheme === 'dark'
+                        ? "bg-slate-700 border-slate-600"
+                        : "bg-slate-50 border-slate-300"
+                    )}
+                  />
+                  <label
+                    htmlFor="useDpi"
+                    className={cn(
+                      "text-sm cursor-pointer select-none",
+                      resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-600"
+                    )}
+                  >
+                    Usar DPI customizado
+                  </label>
+                </div>
                 <div className="flex-1">
                   <label className={cn(
                     "block text-sm mb-1",
+                    !useDpi && "opacity-50",
                     resolvedTheme === 'dark' ? "text-slate-400" : "text-slate-600"
                   )}>Escala / DPI</label>
                   <input
                     type="number"
                     value={dpi}
                     onChange={(e) => setDpi(Number(e.target.value))}
+                    disabled={!useDpi}
                     min={72}
                     max={600}
                     className={cn(
-                      "w-32 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500",
+                      "w-32 px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 transition-opacity",
+                      !useDpi && "opacity-50 cursor-not-allowed",
                       resolvedTheme === 'dark'
-                        ? "bg-slate-700/50 border-slate-600 text-white"
-                        : "bg-slate-50 border-slate-300 text-slate-900"
+                        ? "bg-slate-700/50 border-slate-600 text-white disabled:bg-slate-800"
+                        : "bg-slate-50 border-slate-300 text-slate-900 disabled:bg-slate-100"
                     )}
                   />
-                  <span className="text-xs text-slate-500 ml-2">PDFs e imagens • Maior = melhor qualidade, mais lento</span>
+                  <span className={cn(
+                    "text-xs text-slate-500 ml-2",
+                    !useDpi && "opacity-50"
+                  )}>PDFs e imagens • Maior = melhor qualidade, mais lento</span>
                 </div>
               </div>
             </div>
@@ -522,6 +606,32 @@ function App() {
             Suporta PDF e imagens (PNG, JPG, WEBP, GIF, BMP)
           </p>
         </div>
+
+        {/* Camera Button for Mobile */}
+        {isMobile && (
+          <div className="mt-4">
+            <input
+              ref={cameraInputRef}
+              type="file"
+              accept="image/*"
+              capture="environment"
+              onChange={handleCameraCapture}
+              className="hidden"
+            />
+            <button
+              onClick={openCamera}
+              className={cn(
+                'w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg font-medium transition-colors',
+                resolvedTheme === 'dark'
+                  ? 'bg-purple-600/20 text-purple-400 hover:bg-purple-600/30 border border-purple-500/30'
+                  : 'bg-purple-100 text-purple-700 hover:bg-purple-200 border border-purple-300'
+              )}
+            >
+              <Camera className="w-5 h-5" />
+              Tirar foto com a câmera
+            </button>
+          </div>
+        )}
 
         {/* Action Buttons */}
         {files.length > 0 && (

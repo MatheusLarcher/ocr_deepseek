@@ -17,7 +17,7 @@ app = FastAPI(title="DeepSeek OCR API", version="1.0.0")
 # CORS for React frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],
+    allow_origins=["http://localhost:5400", "http://localhost:5173", "http://localhost:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,7 +60,7 @@ async def run_ocr_on_image(image_base64: str, prompt: str = "Extract the text in
             response = await client.post(
                 f"{OLLAMA_BASE_URL}/api/generate",
                 json={
-                    "model": "deepseek-ocr",
+                    "model": "deepseek-ocr:3b-bf16",
                     "prompt": prompt,
                     "images": [image_base64],
                     "stream": False,
@@ -117,15 +117,19 @@ async def ocr_image(
     # Higher DPI = larger image for better OCR on small text
     if dpi != 200:
         scale_factor = dpi / 200
-        new_width = int(image.width * scale_factor)
-        new_height = int(image.height * scale_factor)
+        new_width = max(1, int(image.width * scale_factor))
+        new_height = max(1, int(image.height * scale_factor))
         # Limit max size to avoid memory issues
         max_dimension = 4096
         if new_width > max_dimension or new_height > max_dimension:
             ratio = min(max_dimension / new_width, max_dimension / new_height)
-            new_width = int(new_width * ratio)
-            new_height = int(new_height * ratio)
-        image_for_ocr = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            new_width = max(1, int(new_width * ratio))
+            new_height = max(1, int(new_height * ratio))
+        # Only resize if dimensions are valid
+        if new_width > 0 and new_height > 0:
+            image_for_ocr = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+        else:
+            image_for_ocr = image
     else:
         image_for_ocr = image
     
@@ -250,4 +254,4 @@ async def ocr_batch(
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    uvicorn.run(app, host="0.0.0.0", port=5401)

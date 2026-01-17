@@ -1,0 +1,15 @@
+{
+  "name": "ocr-deepseek",
+  "version": "1.0.0",
+  "description": "OCR application with DeepSeek and React",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:frontend": "cd frontend && npm run dev -- --port 5400",
+    "dev:backend": "cd backend && python -m uvicorn main:app --reload --host 0.0.0.0 --port 5401",
+    "install:all": "npm install && cd frontend && npm install && cd ..",
+    "build:frontend": "cd frontend && npm run build"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2"
+  }
+}
